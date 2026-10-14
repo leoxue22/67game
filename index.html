@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="zh-TW" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 猜拳對決大賽 - Teachable Machine</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Updated TensorFlow.js and Teachable Machine Image libraries for dimensional stability -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.7.4/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.4/dist/teachablemachine-image.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        @keyframes scanline {
+            0% { transform: translateY(-100%); }
+            100% { transform: translateY(100%); }
+        }
+        .scan-animation {
+            animation: scanline 2.5s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 h-full flex flex-col justify-between selection:bg-indigo-500 selection:text-white">
+
+    <header class="bg-slate-900/80 backdrop-blur-md border-b border-slate-800 sticky top-0 z-50 px-4 py-3 shadow-lg">
+        <div class="max-w-4xl mx-auto flex justify-between items-center">
+            <div class="flex items-center space-x-3">
+                <div class="bg-gradient-to-tr from-indigo-600 to-violet-500 p-2.5 rounded-xl text-white shadow-md shadow-indigo-500/20">
+                    <i class="fa-solid fa-hand-fist text-xl animate-bounce"></i>
+                </div>
+                <div>
+                    <h1 class="text-lg font-bold tracking-tight text-white">AI 猜拳大對決</h1>
+                    <p class="text-xs text-slate-400">Teachable Machine 視訊出拳遊戲</p>
+                </div>
+            </div>
+            <div class="flex items-center space-x-3">
+                <div class="bg-slate-800 border border-slate-700 px-3.5 py-1.5 rounded-full text-sm font-semibold flex items-center space-x-2">
+                    <i class="fa-solid fa-fire text-amber-400"></i>
+                    <span>最高連勝: <strong id="max-streak" class="text-white">0</strong></span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="flex-grow flex items-center justify-center p-4 sm:p-6 overflow-y-auto">
+        <div class="w-full max-w-3xl mx-auto space-y-6">
+
+            <!-- Model Loading Card -->
+            <div id="loading-card" class="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center space-y-4 shadow-2xl">
+                <div class="inline-flex p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl text-indigo-400 text-3xl">
+                    <i id="loading-icon" class="fa-solid fa-brain animate-spin"></i>
+                </div>
+                <div class="space-y-1">
+                    <h2 class="text-xl font-bold text-white">正在載入 AI 模型...</h2>
+                    <p id="loading-status" class="text-xs text-slate-400">請允許攝影機權限以開始手勢辨識</p>
+                </div>
+                <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden max-w-xs mx-auto">
+                    <div id="loading-bar" class="bg-indigo-500 h-full w-1/2 animate-pulse"></div>
+                </div>
+                <div id="retry-container" class="hidden pt-2">
+                    <button onclick="initModel()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold shadow transition-all cursor-pointer">
+                        重新載入模型與鏡頭
+                    </button>
+                </div>
+            </div>
+
+            <!-- Game Arena (Hidden until loaded) -->
+            <div id="game-arena" class="hidden grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                <!-- Left Column: Webcam & Live Prediction -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col items-center space-y-4">
+                    <div class="flex justify-between w-full items-center">
+                        <span class="text-xs font-semibold text-slate-400 tracking-wider uppercase flex items-center space-x-1.5">
+                            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                            <span>玩家攝影機 (你)</span>
+                        </span>
+                        <span id="player-live-prediction" class="px-2.5 py-1 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-full text-xs font-bold">
+                            等待出拳...
+                        </span>
+                    </div>
+
+                    <!-- Webcam Box with Scan overlay -->
+                    <div class="relative w-full aspect-[4/3] bg-slate-950 rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center shadow-inner">
+                        <div id="webcam-container" class="w-full h-full flex items-center justify-center"></div>
+                        <div class="absolute inset-0 pointer-events-none border-2 border-indigo-500/20 rounded-xl overflow-hidden">
+                            <div class="w-full h-1 bg-gradient-to-r from-transparent via-indigo-500/60 to-transparent scan-animation"></div>
+                        </div>
+                    </div>
+
+                    <!-- Confidence Meters -->
+                    <div class="w-full space-y-2 pt-1" id="confidence-meters">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Right Column: Computer Opponent & Controls -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col justify-between space-y-4">
+                    
+                    <!-- Scoreboard -->
+                    <div class="grid grid-cols-3 gap-2 text-center">
+                        <div class="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
+                            <span class="block text-[10px] text-slate-400 uppercase">玩家勝</span>
+                            <span id="score-player" class="text-lg font-bold text-emerald-400">0</span>
+                        </div>
+                        <div class="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
+                            <span class="block text-[10px] text-slate-400 uppercase">平局</span>
+                            <span id="score-draw" class="text-lg font-bold text-slate-400">0</span>
+                        </div>
+                        <div class="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
+                            <span class="block text-[10px] text-slate-400 uppercase">電腦勝</span>
+                            <span id="score-computer" class="text-lg font-bold text-rose-400">0</span>
+                        </div>
+                    </div>
+
+                    <!-- Battle Showcase Arena -->
+                    <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-4 flex flex-col items-center justify-center space-y-3 flex-grow">
+                        <div class="flex items-center justify-around w-full">
+                            <div class="text-center space-y-1">
+                                <span class="text-[11px] text-slate-400">你</span>
+                                <div id="player-weapon-display" class="w-16 h-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-3xl shadow-md">
+                                    ✊
+                                </div>
+                            </div>
+                            <div class="text-xl font-black text-slate-600 italic">VS</div>
+                            <div class="text-center space-y-1">
+                                <span class="text-[11px] text-slate-400">電腦</span>
+                                <div id="computer-weapon-display" class="w-16 h-16 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-3xl shadow-md">
+                                    🤖
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Result Banner -->
+                        <div id="battle-result-text" class="text-sm font-bold text-slate-300 pt-2 text-center min-h-[2rem]">
+                            請點擊下方按鈕或倒數進行對決！
+                        </div>
+                    </div>
+
+                    <!-- Action Control Panel -->
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between text-xs text-slate-400 px-1">
+                            <span>目前連勝: <strong id="current-streak" class="text-indigo-400">0</strong> 局</span>
+                            <span id="countdown-timer" class="font-bold text-amber-400">準備就緒</span>
+                        </div>
+                        <button id="fight-btn" onclick="startRound()" class="w-full py-3.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold rounded-xl shadow-lg shadow-indigo-600/30 transition-all transform hover:-translate-y-0.5 active:translate-y-0 cursor-pointer flex items-center justify-center space-x-2">
+                            <i class="fa-solid fa-bolt"></i>
+                            <span>開始 3 秒猜拳對決！</span>
+                        </button>
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+    </main>
+
+    <div id="toast" class="fixed bottom-5 right-5 z-50 transform translate-y-20 opacity-0 transition-all duration-300 bg-slate-800 border border-slate-700 text-white px-4 py-3 rounded-xl shadow-xl flex items-center space-x-3">
+        <i class="fa-solid fa-circle-check text-emerald-400"></i>
+        <span id="toast-message" class="text-sm font-medium">通知訊息</span>
+    </div>
+
+    <footer class="py-3 text-center text-xs text-slate-500 border-t border-slate-900">
+        AI Rock Paper Scissors Game &copy; 2026 &bull; Powered by Teachable Machine
+    </footer>
+
+    <script>
+        const URL_MODEL = "https://teachablemachine.withgoogle.com/models/f98D27-b4/";
+
+        let model, webcam, maxPredictions;
+        let isPlaying = false;
+        let currentStreak = 0;
+        let maxStreak = 0;
+
+        let scorePlayer = 0;
+        let scoreComputer = 0;
+        let scoreDraw = 0;
+
+        // Weapon Map for Teachable Machine model classes
+        const weaponMap = {
+            "Rock": { name: "石頭", emoji: "✊", val: 0 },
+            "Paper": { name: "布", emoji: "🖐️", val: 1 },
+            "Scissors": { name: "剪刀", emoji: "✌️", val: 2 },
+            "石頭": { name: "石頭", emoji: "✊", val: 0 },
+            "布": { name: "布", emoji: "🖐️", val: 1 },
+            "剪刀": { name: "剪刀", emoji: "✌️", val: 2 },
+            "class1": { name: "石頭", emoji: "✊", val: 0 },
+            "class2": { name: "布", emoji: "🖐️", val: 1 },
+            "class3": { name: "剪刀", emoji: "✌️", val: 2 }
+        };
+
+        window.addEventListener('DOMContentLoaded', () => {
+            const savedMaxStreak = localStorage.getItem('tm_rps_max_streak');
+            if (savedMaxStreak) {
+                maxStreak = parseInt(savedMaxStreak, 10);
+                document.getElementById('max-streak').textContent = maxStreak;
+            }
+            initModel();
+        });
+
+        async function initModel() {
+            try {
+                document.getElementById('retry-container').classList.add('hidden');
+                document.getElementById('loading-status').textContent = "正在載入神經網路模型...";
+                document.getElementById('loading-icon').className = "fa-solid fa-brain animate-spin text-indigo-400";
+
+                const modelURL = URL_MODEL + "model.json";
+                const metadataURL = URL_MODEL + "metadata.json";
+
+                model = await tmImage.load(modelURL, metadataURL);
+                maxPredictions = model.getTotalClasses();
+
+                document.getElementById('loading-status').textContent = "正在啟動視訊鏡頭...";
+                
+                const flip = true;
+                webcam = new tmImage.Webcam(320, 240, flip);
+                await webcam.setup();
+                await webcam.play();
+                window.requestAnimationFrame(loop);
+
+                const webcamContainer = document.getElementById('webcam-container');
+                webcamContainer.innerHTML = '';
+                webcamContainer.appendChild(webcam.canvas);
+
+                const metersContainer = document.getElementById('confidence-meters');
+                metersContainer.innerHTML = '';
+                const classLabels = model.getClassLabels();
+
+                for (let i = 0; i < maxPredictions; i++) {
+                    const className = classLabels[i];
+                    const mapped = weaponMap[className] ? weaponMap[className].name : className;
+                    const div = document.createElement('div');
+                    div.className = "space-y-1";
+                    div.innerHTML = `
+                        <div class="flex justify-between text-xs text-slate-400">
+                            <span>${mapped} (${className})</span>
+                            <span id="conf-val-${i}">0%</span>
+                        </div>
+                        <div class="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden">
+                            <div id="conf-bar-${i}" class="bg-indigo-500 h-full w-0 transition-all duration-100"></div>
+                        </div>
+                    `;
+                    metersContainer.appendChild(div);
+                }
+
+                document.getElementById('loading-card').classList.add('hidden');
+                document.getElementById('game-arena').classList.remove('hidden');
+
+            } catch (error) {
+                console.error("Initialization Error:", error);
+                document.getElementById('loading-status').textContent = "無法啟動攝影機或載入模型，請確認瀏覽器已允許攝影機權限。";
+                document.getElementById('loading-icon').className = "fa-solid fa-triangle-exclamation text-rose-500 text-3xl";
+                document.getElementById('retry-container').classList.remove('hidden');
+            }
+        }
+
+        async function loop() {
+            if (webcam && webcam.webcam) {
+                webcam.update();
+                if (!isPlaying) {
+                    await predict();
+                }
+            }
+            window.requestAnimationFrame(loop);
+        }
+
+        let lastPredictionClass = "";
+
+        async function predict() {
+            if (!model || !webcam || !webcam.canvas) return;
+            // Ensure webcam canvas has loaded frame data before predicting
+            try {
+                const prediction = await model.predict(webcam.canvas);
+                
+                let highestProb = 0;
+                let bestClass = "";
+
+                const classLabels = model.getClassLabels();
+                for (let i = 0; i < maxPredictions; i++) {
+                    const className = classLabels[i];
+                    const probability = prediction[i].probability;
+                    const percent = Math.round(probability * 100);
+
+                    const bar = document.getElementById(`conf-bar-${i}`);
+                    const val = document.getElementById(`conf-val-${i}`);
+                    if (bar && val) {
+                        bar.style.width = `${percent}%`;
+                        val.textContent = `${percent}%`;
+                    }
+
+                    if (probability > highestProb) {
+                        highestProb = probability;
+                        bestClass = className;
+                    }
+                }
+
+                lastPredictionClass = bestClass;
+                const mapped = weaponMap[bestClass] || { name: bestClass, emoji: "✨" };
+                document.getElementById('player-live-prediction').textContent = `${mapped.emoji} ${mapped.name} (${Math.round(highestProb*100)}%)`;
+            } catch (e) {
+                console.warn("Prediction frame skip:", e);
+            }
+        }
+
+        async function startRound() {
+            if (isPlaying) return;
+            isPlaying = true;
+
+            const fightBtn = document.getElementById('fight-btn');
+            fightBtn.disabled = true;
+            fightBtn.classList.add('opacity-50', 'cursor-not-allowed');
+
+            const timerDisplay = document.getElementById('countdown-timer');
+            const resultText = document.getElementById('battle-result-text');
+            const playerWeaponDisplay = document.getElementById('player-weapon-display');
+            const computerWeaponDisplay = document.getElementById('computer-weapon-display');
+
+            resultText.textContent = "請在鏡頭前擺出你的手勢...";
+            
+            for (let i = 3; i > 0; i--) {
+                timerDisplay.textContent = `倒數 ${i} 秒...`;
+                playerWeaponDisplay.textContent = i === 3 ? "✊" : (i === 2 ? "🖐️" : "✌️");
+                computerWeaponDisplay.textContent = "🤖";
+                await new Promise(r => setTimeout(r, 1000));
+            }
+
+            timerDisplay.textContent = "結算中！";
+            playerWeaponDisplay.classList.add('animate-bounce');
+            computerWeaponDisplay.classList.add('animate-bounce');
+
+            await predict();
+            const playerChoiceStr = lastPredictionClass;
+            const playerWeapon = weaponMap[playerChoiceStr] || { name: "石頭", emoji: "✊", val: 0 };
+
+            const computerChoices = [
+                { name: "石頭", emoji: "✊", val: 0 },
+                { name: "布", emoji: "🖐️", val: 1 },
+                { name: "剪刀", emoji: "✌️", val: 2 }
+            ];
+            const computerWeapon = computerChoices[Math.floor(Math.random() * computerChoices.length)];
+
+            playerWeaponDisplay.textContent = playerWeapon.emoji;
+            computerWeaponDisplay.textContent = computerWeapon.emoji;
+
+            setTimeout(() => {
+                playerWeaponDisplay.classList.remove('animate-bounce');
+                computerWeaponDisplay.classList.remove('animate-bounce');
+
+                const pVal = playerWeapon.val !== undefined ? playerWeapon.val : 0;
+                const cVal = computerWeapon.val;
+                
+                const diff = (pVal - cVal + 3) % 3;
+
+                if (diff === 0) {
+                    scoreDraw++;
+                    currentStreak = 0;
+                    resultText.innerHTML = `<span class="text-amber-400">平手！雙方都出 ${playerWeapon.name}！</span>`;
+                } else if (diff === 1) {
+                    scorePlayer++;
+                    currentStreak++;
+                    if (currentStreak > maxStreak) {
+                        maxStreak = currentStreak;
+                        localStorage.setItem('tm_rps_max_streak', maxStreak);
+                        document.getElementById('max-streak').textContent = maxStreak;
+                        showToast(`新紀錄！達成 ${maxStreak} 連勝！`);
+                    }
+                    resultText.innerHTML = `<span class="text-emerald-400 font-bold text-base">你贏了！🎉 (${playerWeapon.name} 勝過 ${computerWeapon.name})</span>`;
+                } else {
+                    scoreComputer++;
+                    currentStreak = 0;
+                    resultText.innerHTML = `<span class="text-rose-400">你輸了... 😢 (${computerWeapon.name} 勝過 ${playerWeapon.name})</span>`;
+                }
+
+                document.getElementById('score-player').textContent = scorePlayer;
+                document.getElementById('score-draw').textContent = scoreDraw;
+                document.getElementById('score-computer').textContent = scoreComputer;
+                document.getElementById('current-streak').textContent = currentStreak;
+
+                timerDisplay.textContent = "準備就緒";
+                fightBtn.disabled = false;
+                fightBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                isPlaying = false;
+            }, 800);
+        }
+
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            const toastMsg = document.getElementById('toast-message');
+            toastMsg.textContent = message;
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            setTimeout(() => {
+                toast.classList.add('translate-y-20', 'opacity-0');
+            }, 3500);
+        }
+    </script>
+</body>
+</html>
